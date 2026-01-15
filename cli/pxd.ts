@@ -10,6 +10,57 @@ import { join } from 'path';
 const CONFIG_DIR = join(homedir(), '.pxd');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
 const ACTIVE_FILE = join(CONFIG_DIR, 'active');
+const CACHE_FILE = join(CONFIG_DIR, 'cache.json');
+
+interface CachedTag {
+  id: string;
+  name: string;
+  meta?: Record<string, unknown>;
+  links?: { type: string; url: string }[];
+  created_at: number;
+  updated_at: number;
+}
+
+interface Cache {
+  tags: Record<string, CachedTag>;
+  updated_at: number;
+}
+
+function loadCache(): Cache {
+  if (!existsSync(CACHE_FILE)) {
+    return { tags: {}, updated_at: 0 };
+  }
+  try {
+    return JSON.parse(readFileSync(CACHE_FILE, 'utf-8'));
+  } catch {
+    return { tags: {}, updated_at: 0 };
+  }
+}
+
+function saveCache(cache: Cache) {
+  cache.updated_at = Date.now();
+  writeFileSync(CACHE_FILE, JSON.stringify(cache));
+}
+
+function cacheSet(tag: CachedTag) {
+  const cache = loadCache();
+  cache.tags[tag.id] = tag;
+  saveCache(cache);
+}
+
+function cacheDelete(id: string) {
+  const cache = loadCache();
+  delete cache.tags[id];
+  saveCache(cache);
+}
+
+function cacheGet(id: string): CachedTag | undefined {
+  return loadCache().tags[id];
+}
+
+function cacheAll(): CachedTag[] {
+  return Object.values(loadCache().tags).sort((a, b) => b.updated_at - a.updated_at);
+}
 
 const HELP = `pxd - Universal Tag System
 
@@ -21,6 +72,7 @@ USAGE
   pxd list                    List all tags
   pxd work [id]               Set/show active project
   pxd delete <id>             Delete tag (admin only)
+  pxd sync                    Force sync cache from API
 
 OPTIONS
   --help, -h                  Show this help
@@ -126,7 +178,10 @@ async function cmdNew(config: Config, name: string, opts: { json: boolean }) {
   if (!res.ok) {
     err((res.data as { error?: string }).error || 'Unknown error', opts.json);
   }
-  const tag = res.data as { id: string; name: string };
+  const tag = res.data as { id: string; name: string; created_at: number };
+  
+  // Update cache
+  cacheSet({ ...tag, updated_at: tag.created_at, links: [] });
   
   if (opts.json) {
     output(tag, true);
@@ -136,32 +191,31 @@ async function cmdNew(config: Config, name: string, opts: { json: boolean }) {
 }
 
 async function cmdShow(config: Config, id: string, opts: { json: boolean }) {
+  // Try cache first
+  let tag = cacheGet(id);
+  
+  // Fetch from API to ensure fresh (and update cache)
   const res = await api(config, 'GET', `/id/${id}`);
-  if (!res.ok) {
+  if (res.ok) {
+    tag = res.data as CachedTag;
+    cacheSet(tag);
+  } else if (!tag) {
     err((res.data as { error?: string }).error || 'Not found', opts.json);
   }
-  const tag = res.data as {
-    id: string;
-    name: string;
-    meta: Record<string, unknown>;
-    links: { type: string; url: string }[];
-    created_at: number;
-    updated_at: number;
-  };
   
   if (opts.json) {
     output(tag, true);
   } else {
-    console.log(`ID:      ${tag.id}`);
-    console.log(`Name:    ${tag.name}`);
-    console.log(`Created: ${formatDate(tag.created_at)}`);
-    console.log(`Updated: ${formatDate(tag.updated_at)}`);
-    if (Object.keys(tag.meta || {}).length > 0) {
-      console.log(`Meta:    ${JSON.stringify(tag.meta)}`);
+    console.log(`ID:      ${tag!.id}`);
+    console.log(`Name:    ${tag!.name}`);
+    console.log(`Created: ${formatDate(tag!.created_at)}`);
+    console.log(`Updated: ${formatDate(tag!.updated_at)}`);
+    if (Object.keys(tag!.meta || {}).length > 0) {
+      console.log(`Meta:    ${JSON.stringify(tag!.meta)}`);
     }
-    if (tag.links?.length > 0) {
+    if (tag!.links?.length) {
       console.log('Links:');
-      for (const link of tag.links) {
+      for (const link of tag!.links) {
         console.log(`  ${link.type}: ${link.url}`);
       }
     }
@@ -173,6 +227,16 @@ async function cmdLink(config: Config, id: string, type: string, url: string, op
   if (!res.ok) {
     err((res.data as { error?: string }).error || 'Unknown error', opts.json);
   }
+  
+  // Update cache
+  const tag = cacheGet(id);
+  if (tag) {
+    tag.links = tag.links || [];
+    tag.links.push({ type, url });
+    tag.updated_at = Date.now();
+    cacheSet(tag);
+  }
+  
   if (opts.json) {
     output({ ok: true, id, type, url }, true);
   } else {
@@ -181,11 +245,20 @@ async function cmdLink(config: Config, id: string, type: string, url: string, op
 }
 
 async function cmdSearch(config: Config, query: string, opts: { json: boolean }) {
+  // Search cache first (instant)
+  const q = query.toLowerCase();
+  let tags = cacheAll().filter(t => t.name.toLowerCase().includes(q));
+  
+  // Also fetch from API to ensure completeness
   const res = await api(config, 'GET', `/search?q=${encodeURIComponent(query)}`);
-  if (!res.ok) {
-    err((res.data as { error?: string }).error || 'Unknown error', opts.json);
+  if (res.ok) {
+    const remoteTags = res.data as CachedTag[];
+    // Merge into cache
+    for (const t of remoteTags) {
+      cacheSet(t);
+    }
+    tags = remoteTags;
   }
-  const tags = res.data as { id: string; name: string; updated_at: number }[];
   
   if (opts.json) {
     output(tags, true);
@@ -199,11 +272,22 @@ async function cmdSearch(config: Config, query: string, opts: { json: boolean })
 }
 
 async function cmdList(config: Config, opts: { json: boolean }) {
+  // Use cache, refresh in background
+  let tags = cacheAll();
+  
+  // Fetch from API to sync
   const res = await api(config, 'GET', '/list');
-  if (!res.ok) {
-    err((res.data as { error?: string }).error || 'Unknown error', opts.json);
+  if (res.ok) {
+    const remoteTags = res.data as CachedTag[];
+    // Full sync - rebuild cache from API
+    const cache = loadCache();
+    cache.tags = {};
+    for (const t of remoteTags) {
+      cache.tags[t.id] = t;
+    }
+    saveCache(cache);
+    tags = remoteTags;
   }
-  const tags = res.data as { id: string; name: string; updated_at: number }[];
   
   if (opts.json) {
     output(tags, true);
@@ -249,6 +333,10 @@ async function cmdDelete(config: Config, id: string, opts: { json: boolean }) {
   if (!res.ok) {
     err((res.data as { error?: string }).error || 'Unknown error', opts.json);
   }
+  
+  // Remove from cache
+  cacheDelete(id);
+  
   if (opts.json) {
     output({ ok: true, deleted: id }, true);
   } else {
@@ -316,6 +404,11 @@ async function main() {
         err('Usage: pxd delete <id>', jsonFlag);
       }
       await cmdDelete(config, positional[1], opts);
+      break;
+
+    case 'sync':
+      await cmdList(config, { json: false }); // list does full sync
+      console.log('Cache synced');
       break;
 
     case 'help':
