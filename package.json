@@ -4,9 +4,10 @@
   "description": "Universal Tag System",
   "type": "module",
   "bin": {
-    "pxd": "./cli/pxd.ts"
+    "pxd": "./dist/pxd.js"
   },
   "scripts": {
+    "build": "tsc && sed -i '1s|.*|#!/usr/bin/env node|' dist/pxd.js",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:create": "wrangler d1 create pxd",
@@ -18,7 +19,8 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240117.0",
-    "wrangler": "^3.24.0",
-    "typescript": "^5.3.3"
+    "@types/node": "^25.0.9",
+    "typescript": "^5.3.3",
+    "wrangler": "^3.24.0"
   }
 }
