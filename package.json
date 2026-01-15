@@ -1,0 +1,24 @@
+{
+  "name": "pxd",
+  "version": "0.1.0",
+  "description": "Universal Tag System",
+  "type": "module",
+  "bin": {
+    "pxd": "./cli/pxd.ts"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create pxd",
+    "db:init": "wrangler d1 execute pxd --file=./schema.sql",
+    "db:init:local": "wrangler d1 execute pxd --local --file=./schema.sql"
+  },
+  "dependencies": {
+    "tsx": "^4.7.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240117.0",
+    "wrangler": "^3.24.0",
+    "typescript": "^5.3.3"
+  }
+}

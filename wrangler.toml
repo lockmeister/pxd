@@ -1,0 +1,8 @@
+name = "pxd"
+main = "src/worker.ts"
+compatibility_date = "2024-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "pxd"
+database_id = "36bcb1f6-05a3-4f46-b548-1209611147aa"
