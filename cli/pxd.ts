@@ -1,18 +1,8 @@
 #!/usr/bin/env -S npx tsx
 /**
  * pxd CLI - Universal Tag System
- * 
- * Usage:
- *   pxd new "Project name"           Create new tag
- *   pxd show <id>                    Show tag details
- *   pxd link <id> <type> <url>       Add link to tag
- *   pxd search <query>               Search tags
- *   pxd list                         List all tags
- *   pxd work <id>                    Set active project
- *   pxd work                         Show active project
  */
 
-import { execSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -20,6 +10,35 @@ import { join } from 'path';
 const CONFIG_DIR = join(homedir(), '.pxd');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
 const ACTIVE_FILE = join(CONFIG_DIR, 'active');
+
+const HELP = `pxd - Universal Tag System
+
+USAGE
+  pxd new <name>              Create new tag, returns ID
+  pxd show <id>               Show tag details  
+  pxd link <id> <type> <url>  Add link to tag
+  pxd search <query>          Search tags by name
+  pxd list                    List all tags
+  pxd work [id]               Set/show active project
+  pxd delete <id>             Delete tag (admin only)
+
+OPTIONS
+  --help, -h                  Show this help
+  --json                      Output as JSON (for scripting)
+
+EXAMPLES
+  pxd new "Echo project"
+  pxd link px8syphaf github https://github.com/org/echo
+  pxd show px8syphaf
+  pxd search echo
+
+CONFIG
+  ~/.pxd/config.json          API URL and keys
+  ~/.pxd/active               Current active project ID
+
+ENV
+  PXD_KEY                     API key (overrides config)
+`;
 
 interface Config {
   api_url: string;
@@ -31,7 +50,7 @@ function loadConfig(): Config {
   if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
   if (!existsSync(CONFIG_FILE)) {
     const defaults: Config = {
-      api_url: 'https://pxd.lockmeister.workers.dev',
+      api_url: 'https://pxd.thelockmeister.workers.dev',
     };
     writeFileSync(CONFIG_FILE, JSON.stringify(defaults, null, 2));
     return defaults;
@@ -40,8 +59,7 @@ function loadConfig(): Config {
 }
 
 function getKey(config: Config): string {
-  // Prefer admin key, fall back to agent key, then env
-  return config.admin_key || config.agent_key || process.env.PXD_KEY || '';
+  return process.env.PXD_KEY || config.admin_key || config.agent_key || '';
 }
 
 async function api(
@@ -51,29 +69,30 @@ async function api(
   body?: unknown
 ): Promise<{ ok: boolean; status: number; data: unknown }> {
   const key = getKey(config);
-  const res = await fetch(`${config.api_url}${path}`, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(key ? { 'X-PXD-Key': key } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json().catch(() => ({}));
-  return { ok: res.ok, status: res.status, data };
-}
-
-function copyToClipboard(text: string): boolean {
+  
+  // Add timeout to prevent hanging
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  
   try {
-    execSync(`echo -n "${text}" | wl-copy`, { stdio: 'pipe', timeout: 2000 });
-    return true;
-  } catch {
-    try {
-      execSync(`echo -n "${text}" | xclip -selection clipboard`, { stdio: 'pipe' });
-      return true;
-    } catch {
-      return false;
+    const res = await fetch(`${config.api_url}${path}`, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(key ? { 'X-PXD-Key': key } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data };
+  } catch (err) {
+    if ((err as Error).name === 'AbortError') {
+      return { ok: false, status: 0, data: { error: 'Request timeout' } };
     }
+    return { ok: false, status: 0, data: { error: (err as Error).message } };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -81,26 +100,45 @@ function formatDate(ts: number): string {
   return new Date(ts).toISOString().split('T')[0];
 }
 
-// Commands
-
-async function cmdNew(config: Config, name: string) {
-  const res = await api(config, 'POST', '/id', { name });
-  if (!res.ok) {
-    console.error('Error:', (res.data as { error?: string }).error || 'Unknown error');
-    process.exit(1);
+function output(data: unknown, json: boolean) {
+  if (json) {
+    console.log(JSON.stringify(data));
+  } else if (typeof data === 'string') {
+    console.log(data);
+  } else {
+    console.log(data);
   }
-  const tag = res.data as { id: string; name: string };
-  const copied = copyToClipboard(tag.id);
-  console.log(`Created: ${tag.id}`);
-  console.log(`Name:    ${tag.name}`);
-  if (copied) console.log('(copied to clipboard)');
 }
 
-async function cmdShow(config: Config, id: string) {
+function err(msg: string, json: boolean) {
+  if (json) {
+    console.log(JSON.stringify({ error: msg }));
+  } else {
+    console.error(`Error: ${msg}`);
+  }
+  process.exit(1);
+}
+
+// Commands
+
+async function cmdNew(config: Config, name: string, opts: { json: boolean }) {
+  const res = await api(config, 'POST', '/id', { name });
+  if (!res.ok) {
+    err((res.data as { error?: string }).error || 'Unknown error', opts.json);
+  }
+  const tag = res.data as { id: string; name: string };
+  
+  if (opts.json) {
+    output(tag, true);
+  } else {
+    console.log(tag.id);
+  }
+}
+
+async function cmdShow(config: Config, id: string, opts: { json: boolean }) {
   const res = await api(config, 'GET', `/id/${id}`);
   if (!res.ok) {
-    console.error('Error:', (res.data as { error?: string }).error || 'Not found');
-    process.exit(1);
+    err((res.data as { error?: string }).error || 'Not found', opts.json);
   }
   const tag = res.data as {
     id: string;
@@ -110,152 +148,186 @@ async function cmdShow(config: Config, id: string) {
     created_at: number;
     updated_at: number;
   };
-  console.log(`ID:      ${tag.id}`);
-  console.log(`Name:    ${tag.name}`);
-  console.log(`Created: ${formatDate(tag.created_at)}`);
-  console.log(`Updated: ${formatDate(tag.updated_at)}`);
-  if (Object.keys(tag.meta).length > 0) {
-    console.log(`Meta:    ${JSON.stringify(tag.meta)}`);
-  }
-  if (tag.links?.length > 0) {
-    console.log('Links:');
-    for (const link of tag.links) {
-      console.log(`  ${link.type}: ${link.url}`);
+  
+  if (opts.json) {
+    output(tag, true);
+  } else {
+    console.log(`ID:      ${tag.id}`);
+    console.log(`Name:    ${tag.name}`);
+    console.log(`Created: ${formatDate(tag.created_at)}`);
+    console.log(`Updated: ${formatDate(tag.updated_at)}`);
+    if (Object.keys(tag.meta || {}).length > 0) {
+      console.log(`Meta:    ${JSON.stringify(tag.meta)}`);
+    }
+    if (tag.links?.length > 0) {
+      console.log('Links:');
+      for (const link of tag.links) {
+        console.log(`  ${link.type}: ${link.url}`);
+      }
     }
   }
 }
 
-async function cmdLink(config: Config, id: string, type: string, url: string) {
+async function cmdLink(config: Config, id: string, type: string, url: string, opts: { json: boolean }) {
   const res = await api(config, 'POST', `/id/${id}/link`, { type, url });
   if (!res.ok) {
-    console.error('Error:', (res.data as { error?: string }).error || 'Unknown error');
-    process.exit(1);
+    err((res.data as { error?: string }).error || 'Unknown error', opts.json);
   }
-  console.log(`Added ${type} link to ${id}`);
+  if (opts.json) {
+    output({ ok: true, id, type, url }, true);
+  } else {
+    console.log(`Added ${type} link to ${id}`);
+  }
 }
 
-async function cmdSearch(config: Config, query: string) {
+async function cmdSearch(config: Config, query: string, opts: { json: boolean }) {
   const res = await api(config, 'GET', `/search?q=${encodeURIComponent(query)}`);
   if (!res.ok) {
-    console.error('Error:', (res.data as { error?: string }).error || 'Unknown error');
-    process.exit(1);
+    err((res.data as { error?: string }).error || 'Unknown error', opts.json);
   }
   const tags = res.data as { id: string; name: string; updated_at: number }[];
-  if (tags.length === 0) {
+  
+  if (opts.json) {
+    output(tags, true);
+  } else if (tags.length === 0) {
     console.log('No results');
-    return;
-  }
-  for (const tag of tags) {
-    console.log(`${tag.id}  ${tag.name}  (${formatDate(tag.updated_at)})`);
+  } else {
+    for (const tag of tags) {
+      console.log(`${tag.id}  ${tag.name}`);
+    }
   }
 }
 
-async function cmdList(config: Config) {
+async function cmdList(config: Config, opts: { json: boolean }) {
   const res = await api(config, 'GET', '/list');
   if (!res.ok) {
-    console.error('Error:', (res.data as { error?: string }).error || 'Unknown error');
-    process.exit(1);
+    err((res.data as { error?: string }).error || 'Unknown error', opts.json);
   }
   const tags = res.data as { id: string; name: string; updated_at: number }[];
-  if (tags.length === 0) {
+  
+  if (opts.json) {
+    output(tags, true);
+  } else if (tags.length === 0) {
     console.log('No tags');
-    return;
-  }
-  for (const tag of tags) {
-    console.log(`${tag.id}  ${tag.name}  (${formatDate(tag.updated_at)})`);
+  } else {
+    for (const tag of tags) {
+      console.log(`${tag.id}  ${tag.name}`);
+    }
   }
 }
 
-function cmdWork(id?: string) {
+function cmdWork(id?: string, opts: { json: boolean } = { json: false }) {
   if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
   
   if (id) {
     writeFileSync(ACTIVE_FILE, id);
-    console.log(`Active project: ${id}`);
+    if (opts.json) {
+      output({ active: id }, true);
+    } else {
+      console.log(id);
+    }
   } else {
     if (existsSync(ACTIVE_FILE)) {
-      console.log(readFileSync(ACTIVE_FILE, 'utf-8').trim());
+      const active = readFileSync(ACTIVE_FILE, 'utf-8').trim();
+      if (opts.json) {
+        output({ active }, true);
+      } else {
+        console.log(active);
+      }
     } else {
-      console.log('No active project');
+      if (opts.json) {
+        output({ active: null }, true);
+      } else {
+        console.log('No active project');
+      }
     }
   }
 }
 
-async function cmdDelete(config: Config, id: string) {
+async function cmdDelete(config: Config, id: string, opts: { json: boolean }) {
   const res = await api(config, 'DELETE', `/id/${id}`);
   if (!res.ok) {
-    console.error('Error:', (res.data as { error?: string }).error || 'Unknown error');
-    process.exit(1);
+    err((res.data as { error?: string }).error || 'Unknown error', opts.json);
   }
-  console.log(`Deleted: ${id}`);
+  if (opts.json) {
+    output({ ok: true, deleted: id }, true);
+  } else {
+    console.log(`Deleted: ${id}`);
+  }
 }
 
 // Main
 
 async function main() {
   const args = process.argv.slice(2);
-  const cmd = args[0];
+  
+  // Parse flags
+  const jsonFlag = args.includes('--json');
+  const helpFlag = args.includes('--help') || args.includes('-h');
+  
+  // Remove flags from args
+  const positional = args.filter(a => !a.startsWith('--') && a !== '-h');
+  const cmd = positional[0];
+  
+  if (helpFlag || !cmd) {
+    console.log(HELP);
+    process.exit(0);
+  }
+  
   const config = loadConfig();
+  const opts = { json: jsonFlag };
 
   switch (cmd) {
     case 'new':
-      if (!args[1]) {
-        console.error('Usage: pxd new "name"');
-        process.exit(1);
+      if (!positional[1]) {
+        err('Usage: pxd new <name>', jsonFlag);
       }
-      await cmdNew(config, args.slice(1).join(' '));
+      await cmdNew(config, positional.slice(1).join(' '), opts);
       break;
 
     case 'show':
-      if (!args[1]) {
-        console.error('Usage: pxd show <id>');
-        process.exit(1);
+      if (!positional[1]) {
+        err('Usage: pxd show <id>', jsonFlag);
       }
-      await cmdShow(config, args[1]);
+      await cmdShow(config, positional[1], opts);
       break;
 
     case 'link':
-      if (!args[1] || !args[2] || !args[3]) {
-        console.error('Usage: pxd link <id> <type> <url>');
-        process.exit(1);
+      if (!positional[1] || !positional[2] || !positional[3]) {
+        err('Usage: pxd link <id> <type> <url>', jsonFlag);
       }
-      await cmdLink(config, args[1], args[2], args[3]);
+      await cmdLink(config, positional[1], positional[2], positional[3], opts);
       break;
 
     case 'search':
-      await cmdSearch(config, args.slice(1).join(' '));
+      await cmdSearch(config, positional.slice(1).join(' '), opts);
       break;
 
     case 'list':
-      await cmdList(config);
+      await cmdList(config, opts);
       break;
 
     case 'work':
-      cmdWork(args[1]);
+      cmdWork(positional[1], opts);
       break;
 
     case 'delete':
-      if (!args[1]) {
-        console.error('Usage: pxd delete <id>');
-        process.exit(1);
+      if (!positional[1]) {
+        err('Usage: pxd delete <id>', jsonFlag);
       }
-      await cmdDelete(config, args[1]);
+      await cmdDelete(config, positional[1], opts);
+      break;
+
+    case 'help':
+      console.log(HELP);
       break;
 
     default:
-      console.log(`pxd - Universal Tag System
-
-Usage:
-  pxd new "name"              Create new tag
-  pxd show <id>               Show tag details
-  pxd link <id> <type> <url>  Add link to tag
-  pxd search <query>          Search tags
-  pxd list                    List all tags
-  pxd work [id]               Set/show active project
-  pxd delete <id>             Delete tag (admin only)
-
-Config: ~/.pxd/config.json`);
+      err(`Unknown command: ${cmd}. Use --help for usage.`, jsonFlag);
   }
 }
 
-main().catch(console.error);
+main().catch((e) => {
+  console.error(`Error: ${e.message}`);
+  process.exit(1);
+});
