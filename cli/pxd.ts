@@ -66,6 +66,7 @@ const HELP = `pxd - Universal Tag System
 
 USAGE
   pxd new [name]              Create new ID (name optional)
+  pxd claim <id> [name]       Register existing ID (for imports)
   pxd show <id>               Show tag details + links
   pxd url <id>                Get clickable Obsidian link
   pxd link <id> <type> <url>  Add link to tag
@@ -82,9 +83,11 @@ OPTIONS
 EXAMPLES
   pxd new                     # just get an ID (for Obsidian notes, etc)
   pxd new "Stripe token"      # ID + name (for tokens, resources)
+  pxd claim pxk8f3m2n         # register existing ID
+  pxd claim pxk8f3m2n "name"  # register with name
+  pxd url pxk8f3m2n           # get clickable Obsidian link
   pxd link px8syphaf github https://github.com/org/echo
   pxd show px8syphaf
-  pxd search stripe
 
 CONFIG
   ~/.pxd/config.json          API URL and keys
@@ -421,6 +424,25 @@ async function main() {
         output({ id: urlId, url: obsUrl }, true);
       } else {
         console.log(obsUrl);
+      }
+      break;
+
+    case 'claim':
+      if (!positional[1]) {
+        err('Usage: pxd claim <id> [name]', jsonFlag);
+      }
+      const claimId = positional[1];
+      const claimName = positional[2] ? positional.slice(2).join(' ') : '';
+      const claimRes = await api(config, 'POST', '/claim', { id: claimId, name: claimName });
+      if (!claimRes.ok) {
+        err((claimRes.data as { error?: string }).error || 'Unknown error', jsonFlag);
+      }
+      const claimed = claimRes.data as { id: string; name: string; created_at: number };
+      cacheSet({ ...claimed, updated_at: claimed.created_at, links: [] });
+      if (jsonFlag) {
+        output(claimed, true);
+      } else {
+        console.log(`Claimed: ${claimed.id}`);
       }
       break;
 

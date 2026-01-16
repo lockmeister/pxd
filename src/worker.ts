@@ -88,6 +88,31 @@ export default {
       return json({ id, name, meta: body.meta || {}, created_at: now }, 201);
     }
 
+    // POST /claim - register existing ID
+    if (method === 'POST' && path === '/claim') {
+      const body = await request.json() as { id: string; name?: string };
+      if (!body.id) return error('id required');
+      
+      // Validate ID format
+      if (!/^px[a-z2-9]{7}$/.test(body.id)) {
+        return error('Invalid ID format (must be px + 7 chars from a-z2-9)');
+      }
+
+      // Check if already claimed
+      const existing = await env.DB.prepare('SELECT id FROM tags WHERE id = ?').bind(body.id).first();
+      if (existing) {
+        return error('ID already claimed', 409);
+      }
+
+      const now = Date.now();
+      const name = body.name || '';
+      await env.DB.prepare(
+        'INSERT INTO tags (id, name, meta, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
+      ).bind(body.id, name, '{}', now, now).run();
+
+      return json({ id: body.id, name, created_at: now }, 201);
+    }
+
     // GET /id/:id - get tag
     if (method === 'GET' && path.startsWith('/id/')) {
       const id = path.slice(4);
