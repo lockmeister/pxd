@@ -67,6 +67,7 @@ const HELP = `pxd - Universal Tag System
 USAGE
   pxd new [name]              Create new ID (name optional)
   pxd show <id>               Show tag details + links
+  pxd url <id>                Get clickable Obsidian link
   pxd link <id> <type> <url>  Add link to tag
   pxd search <query>          Search tags by name
   pxd list                    List all tags
@@ -408,6 +409,19 @@ async function main() {
     case 'sync':
       await cmdList(config, { json: false }); // list does full sync
       console.log('Cache synced');
+      break;
+
+    case 'url':
+      if (!positional[1]) {
+        err('Usage: pxd url <id>', jsonFlag);
+      }
+      const urlId = positional[1];
+      const obsUrl = `https://lockmeister.github.io/obsidianlinks/pid/${urlId}`;
+      if (jsonFlag) {
+        output({ id: urlId, url: obsUrl }, true);
+      } else {
+        console.log(obsUrl);
+      }
       break;
 
     case 'help':
