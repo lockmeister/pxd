@@ -65,8 +65,8 @@ export default {
 
     // POST /id - create new tag
     if (method === 'POST' && path === '/id') {
-      const body = await request.json() as { name: string; meta?: Record<string, unknown> };
-      if (!body.name) return error('name required');
+      const body = await request.json() as { name?: string; meta?: Record<string, unknown> };
+      const name = body.name || '';  // name is optional
 
       // Generate unique ID (retry on collision)
       let id: string;
@@ -83,9 +83,9 @@ export default {
       const now = Date.now();
       await env.DB.prepare(
         'INSERT INTO tags (id, name, meta, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
-      ).bind(id, body.name, JSON.stringify(body.meta || {}), now, now).run();
+      ).bind(id, name, JSON.stringify(body.meta || {}), now, now).run();
 
-      return json({ id, name: body.name, meta: body.meta || {}, created_at: now }, 201);
+      return json({ id, name, meta: body.meta || {}, created_at: now }, 201);
     }
 
     // GET /id/:id - get tag

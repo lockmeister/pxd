@@ -43,8 +43,8 @@ function cacheAll() {
 const HELP = `pxd - Universal Tag System
 
 USAGE
-  pxd new <name>              Create new tag, returns ID
-  pxd show <id>               Show tag details  
+  pxd new [name]              Create new ID (name optional)
+  pxd show <id>               Show tag details + links
   pxd link <id> <type> <url>  Add link to tag
   pxd search <query>          Search tags by name
   pxd list                    List all tags
@@ -57,10 +57,11 @@ OPTIONS
   --json                      Output as JSON (for scripting)
 
 EXAMPLES
-  pxd new "Echo project"
+  pxd new                     # just get an ID (for Obsidian notes, etc)
+  pxd new "Stripe token"      # ID + name (for tokens, resources)
   pxd link px8syphaf github https://github.com/org/echo
   pxd show px8syphaf
-  pxd search echo
+  pxd search stripe
 
 CONFIG
   ~/.pxd/config.json          API URL and keys
@@ -137,7 +138,7 @@ function err(msg, json) {
 }
 // Commands
 async function cmdNew(config, name, opts) {
-    const res = await api(config, 'POST', '/id', { name });
+    const res = await api(config, 'POST', '/id', { name: name || '' });
     if (!res.ok) {
         err(res.data.error || 'Unknown error', opts.json);
     }
@@ -319,10 +320,8 @@ async function main() {
     const opts = { json: jsonFlag };
     switch (cmd) {
         case 'new':
-            if (!positional[1]) {
-                err('Usage: pxd new <name>', jsonFlag);
-            }
-            await cmdNew(config, positional.slice(1).join(' '), opts);
+            // Name is optional - if not provided, just generates ID
+            await cmdNew(config, positional[1] ? positional.slice(1).join(' ') : undefined, opts);
             break;
         case 'show':
             if (!positional[1]) {
